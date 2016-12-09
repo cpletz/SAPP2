@@ -1,5 +1,6 @@
 ﻿module Player
 
+open System
 open System.IO
 open System.Text
 open System.Diagnostics
@@ -40,9 +41,11 @@ type Command =
     | Pause
     | Next
     | Previous
+    | Query
 
 type Api = 
-    { handle : Command -> unit }
+    { handle : Command -> unit
+      changes : IObservable<Drive> }
 
 type CallBack = Drive -> unit
 
@@ -98,6 +101,19 @@ let private runSapControlProcess config command =
     sapProcess.Start() |> ignore
     sapProcess.WaitForExit()
 
+let isLastTrack (PlayList(playList)) track = 
+    match track with
+    | NoTrack -> true
+    | TrackIndex(index) -> 
+        playList
+        |> List.length
+        |> (=) (index + 1)
+
+let private isFirstTrack track = 
+    match track with
+    | NoTrack -> true
+    | TrackIndex(index) -> index = 0
+
 let private setPlayList callback drive playList = 
     match drive with
     | NoDisk -> callback (Loaded playList)
@@ -127,36 +143,80 @@ let private stop config callback drive =
         callback (Loaded playList)
     | _ -> callback drive
 
+let private pause config callback drive = 
+    match drive with
+    | Playing(playList, idx) -> 
+        callback (Pausing(playList, idx))
+        runSapControlProcess config "Pause"
+        callback (Paused(playList, idx))
+    | _ -> callback drive
+
+let private next config callback drive = 
+    match drive with
+    | Playing(pl, tr) when not (isLastTrack pl tr) -> 
+        callback (GoingToNext(pl, tr))
+        runSapControlProcess config "Next"
+    | _ -> callback drive
+
+let private previous config callback drive = 
+    match drive with
+    | Playing(pl, tr) when not (isFirstTrack tr) -> 
+        callback (GoingToPrevious(pl, tr))
+        runSapControlProcess config "Prev"
+    | _ -> callback drive
+
 let private handlePlayListChanged config drive callback = 
     match (findCurrentIndex config) with
     | Failure(msg) -> callback (Broken msg)
-    | Success(index) ->
+    | Success(index) -> 
         match index with
-        | TrackIndex (i) -> 
+        | TrackIndex(i) -> 
             let reportPlaying pl = callback (Playing(pl, index))
             match drive with
             | Starting(playList) -> reportPlaying playList
             | Playing(playList, _) -> reportPlaying playList
+            | GoingToNext(playList, _) -> reportPlaying playList
+            | GoingToPrevious(playList, _) -> reportPlaying playList
             | _ -> ()
         | _ -> ()
 
+let private processPlayListChange config driveRef = 
+    let drive = !driveRef
+    match (findCurrentIndex config) with
+    | Failure(msg) -> Broken msg
+    | Success(index) -> 
+        match index with
+        | TrackIndex(i) -> 
+            let reportPlaying pl = Playing(pl, index)
+            match drive with
+            | Starting(playList) -> reportPlaying playList
+            | Playing(playList, _) -> reportPlaying playList
+            | GoingToNext(playList, _) -> reportPlaying playList
+            | GoingToPrevious(playList, _) -> reportPlaying playList
+            | _ -> drive
+        | _ -> drive
+
+let private processPlayListChanges config drive changeStream = 
+    changeStream |> Observable.map (fun _ -> processPlayListChange config drive)
+
 #nowarn "40"
 
-let createApi (config : ConfigData) callback = 
-    let mutable drive = NoDisk
-    
-    let statusSender = 
-        MailboxProcessor.Start(fun inbox -> 
-            let rec messageLoop = 
-                async { 
-                    let! d = inbox.Receive()
-                    drive <- d
-                    callback d
-                    return! messageLoop
-                }
-            messageLoop)
-    
-    let internalCallback d = statusSender.Post d
+let createApi (config : ConfigData) = 
+    let drive = ref NoDisk
+    let directEvents = new Event<Drive>()
+
+    //    let statusSender = 
+    //        MailboxProcessor.Start(fun inbox -> 
+    //            let rec messageLoop = 
+    //                async { 
+    //                    let! d = inbox.Receive()
+    //                    drive <- d
+    //                    callback d
+    //                    return! messageLoop
+    //                }
+    //            messageLoop)
+    let internalCallback d = 
+        directEvents.Trigger d
     
     let commandReceiver = 
         MailboxProcessor.Start(fun inbox -> 
@@ -164,19 +224,28 @@ let createApi (config : ConfigData) callback =
                 async { 
                     let! cmd = inbox.Receive()
                     match cmd with
-                    | SetPlayList(pl) -> setPlayList internalCallback drive pl
-                    | Play -> play config internalCallback drive
-                    | Stop -> stop config internalCallback drive
-                    | _ -> failwith "Not implemented."
+                    | SetPlayList(pl) -> setPlayList internalCallback !drive pl
+                    | Play -> play config internalCallback !drive
+                    | Stop -> stop config internalCallback !drive
+                    | Pause -> pause config internalCallback !drive
+                    | Next -> next config internalCallback !drive
+                    | Previous -> previous config internalCallback !drive
+                    | Query -> ()
                     return! messageLoop
                 }
             messageLoop)
     
     let playListWatcher = new FileSystemWatcher(config.SAPDirectory, Path.GetFileName config.SAPPlaylistPath)
     playListWatcher.EnableRaisingEvents <- true
-    playListWatcher.Changed.Add(fun ea -> 
-        printf "\nPlayList change type: %O\n" ea.ChangeType
-        handlePlayListChanged config drive internalCallback)
+    //    playListWatcher.Changed.Add(fun ea -> 
+    //        handlePlayListChanged config drive internalCallback)
+    let playListEvents = processPlayListChanges config drive playListWatcher.Changed
+    let allEvents = 
+        directEvents.Publish 
+        |> Observable.merge playListEvents
+        |> Observable.map (fun d -> drive := d; d)
+
     let impl cmd = commandReceiver.Post cmd
-    { handle = impl }
+    { handle = impl
+      changes = allEvents }
 
