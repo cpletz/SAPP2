@@ -20,8 +20,7 @@ let playList = PlayList([ "C:\\_data\\Hifi\\WAVs\\Satin_Doll.wav"; "C:\\_data\\H
 let callback d = 
     printf "\nReceived callback: "
     match d with
-    | Playing(_, TrackIndex t) -> printf "Playing index %i" t
-    | Playing(_, NoTrack) -> printf "Not really"
+    | Playing(_, TrackIndex t, elapsed) -> printf "Playing index %i elapsed %O" t elapsed
     | Loaded _ -> printf "Loaded ..."
     | Starting _ -> printf "Starting ..."
     | Stopping _ -> printf "Stopping ..."
