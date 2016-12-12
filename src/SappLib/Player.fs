@@ -119,53 +119,66 @@ let private setPlayList drive playList =
     | NoDisk -> Loaded playList
     | _ -> drive
 
-let private play config drive = 
+let private play config schedule drive = 
     match drive with
     | Loaded(playList) -> 
         writePlayListFile config playList
         startSapProcess config
         Starting playList
-    | Paused(playList, _) -> 
-        startSapProcess config
-        match (findCurrentIndex config) with
-        | Success(index) -> Playing(playList, index, (getElapsedTime config))
-        | Failure(msg) -> Broken msg
+    | Paused(playList, track) -> 
+        schedule(fun _ ->
+            startSapProcess config
+            Playing(playList, track, TimeSpan.Zero))
+        Resuming (playList, track)
     | _ -> drive
 
 let private stop config schedule drive = 
     match drive with
     | Playing(playList, _, _) -> 
-        let realStop d = 
+        schedule (fun _ -> 
             runSapControlProcess config "Stop"
-            Loaded playList
-        schedule realStop
+            Loaded playList)
         Stopping playList
     | Paused(playList, _) -> 
         writePlayListFile config playList
         Loaded playList
     | _ -> drive
 
-//let private pause config callback drive = 
-//    match drive with
-//    | Playing(playList, idx) -> 
-//        callback (Pausing(playList, idx))
-//        runSapControlProcess config "Pause"
-//        callback (Paused(playList, idx))
-//    | _ -> callback drive
-//
-//let private next config callback drive = 
-//    match drive with
-//    | Playing(pl, tr) when not (isLastTrack pl tr) -> 
-//        callback (GoingToNext(pl, tr))
-//        runSapControlProcess config "Next"
-//    | _ -> callback drive
-//
-//let private previous config callback drive = 
-//    match drive with
-//    | Playing(pl, tr) when not (isFirstTrack tr) -> 
-//        callback (GoingToPrevious(pl, tr))
-//        runSapControlProcess config "Prev"
-//    | _ -> callback drive
+let private pause config schedule drive = 
+    match drive with
+    | Playing(playList, idx, _) -> 
+        schedule (fun _ -> 
+            runSapControlProcess config "Pause"
+            Paused(playList, idx))
+        Pausing(playList, idx)
+    | _ -> drive
+
+let private next config schedule drive = 
+    match drive with
+    | Playing(pl, tr, _) when not (isLastTrack pl tr) -> 
+        schedule (fun nextDrv -> 
+            runSapControlProcess config "Next"
+            nextDrv)
+        GoingToNext(pl, tr)
+    | _ -> drive
+
+let private previous config schedule drive = 
+    match drive with
+    | Playing(pl, tr, _) when not (isFirstTrack tr) -> 
+        schedule (fun nextDrv -> 
+            runSapControlProcess config "Prev"
+            nextDrv)
+        GoingToPrevious(pl, tr)
+    | _ -> drive
+
+let private query config drive = 
+    match drive with
+    | Playing(playList, _, _) -> 
+        match (findCurrentIndex config) with
+        | Success(index) -> Playing(playList, index, (getElapsedTime config))
+        | Failure(msg) -> Broken msg
+    | _ -> drive
+
 let private handlePlayListChanged config drive = 
     match (findCurrentIndex config) with
     | Failure(msg) -> Broken msg
@@ -205,13 +218,12 @@ let createApi (config : ConfigData) =
                         | ExternalCommand cmd -> 
                             match cmd with
                             | SetPlayList(pl) -> setPlayList drive pl
-                            | Play -> play config drive
+                            | Play -> play config schedule drive
                             | Stop -> stop config schedule drive
-                            //                        | Pause -> pause config internalCallback drive
-                            //                        | Next -> next config internalCallback drive
-                            //                        | Previous -> previous config internalCallback drive
-                            //                        | Query -> ()
-                            | _ -> drive
+                            | Pause -> pause config schedule drive
+                            | Next -> next config schedule drive
+                            | Previous -> previous config schedule drive
+                            | Query -> query config drive
                         | PlayListChange _ -> handlePlayListChanged config drive
                         | NextAction(a) -> a drive
                     
@@ -229,4 +241,3 @@ let createApi (config : ConfigData) =
     let impl cmd = commandReceiver.Post(ExternalCommand cmd)
     { handle = impl
       changes = directEvents.Publish }
-

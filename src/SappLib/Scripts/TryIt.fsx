@@ -43,6 +43,8 @@ api.handle Previous
 api.handle Stop
 api.handle Pause
 
+api.handle Query
+
 Player.isLastTrack playList (TrackIndex 0)
 
 
