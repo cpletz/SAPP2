@@ -16,6 +16,9 @@ let config =
       FLACRootPath = "" }
 
 let playList = PlayList([ "C:\\_data\\Hifi\\WAVs\\Satin_Doll.wav"; "C:\\_data\\Hifi\\WAVs\\Satin_Doll2.wav" ] |> List.map MusicFile)
+let playList2 = PlayList([ "C:\\_data\\Hifi\\WAVs\\short1.wav"; "C:\\_data\\Hifi\\WAVs\\short2.wav"; "C:\\_data\\Hifi\\WAVs\\short3.wav" ] |> List.map MusicFile)
+
+
 
 let callback d = 
     printf "\nReceived callback: "
@@ -36,7 +39,7 @@ let callback d =
 let api = Player.createApi config
 api.changes |> Observable.subscribe callback
 
-api.handle (SetPlayList playList)
+api.handle (SetPlayList playList2)
 api.handle Play
 api.handle Next
 api.handle Previous

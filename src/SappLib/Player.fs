@@ -17,20 +17,20 @@ type MusicFile =
 type PlayList = 
     | PlayList of MusicFile list
 
-type CurrentTrack = 
+type TrackIndex = 
     | TrackIndex of int
 
 type Drive = 
     | NoDisk
     | Loaded of playList : PlayList
-    | Playing of playList : PlayList * track : CurrentTrack * elapsed : TimeSpan
-    | Paused of playList : PlayList * track : CurrentTrack
+    | Playing of playList : PlayList * track : TrackIndex * elapsed : TimeSpan
+    | Paused of playList : PlayList * track : TrackIndex
     | Starting of playList : PlayList
     | Stopping of playList : PlayList
-    | Pausing of playList : PlayList * track : CurrentTrack
-    | Resuming of playList : PlayList * track : CurrentTrack
-    | GoingToNext of playList : PlayList * track : CurrentTrack
-    | GoingToPrevious of playList : PlayList * track : CurrentTrack
+    | Pausing of playList : PlayList * track : TrackIndex
+    | Resuming of playList : PlayList * track : TrackIndex
+    | GoingToNext of playList : PlayList * track : TrackIndex
+    | GoingToPrevious of playList : PlayList * track : TrackIndex
     | Broken of reason : string
 
 type Command = 
@@ -50,6 +50,7 @@ type InternalCommand =
     | ExternalCommand of Command
     | PlayListChange
     | NextAction of (Drive -> Drive)
+    | PlayerProcessFinished
 
 let private encoding = Encoding.GetEncoding("ISO-8859-1")
 
@@ -84,8 +85,6 @@ let private getElapsedTime (config : ConfigData) =
     let playListFileInfo = FileInfo config.SAPPlaylistPath
     DateTime.Now.Subtract(playListFileInfo.LastWriteTime)
 
-let private handlePlayerProcessExited e = ()
-
 let private prepareSapProcess config = 
     let info = ProcessStartInfo config.SAPExePath
     info.WorkingDirectory <- config.SAPDirectory
@@ -94,10 +93,10 @@ let private prepareSapProcess config =
     sapProcess.StartInfo <- info
     (info, sapProcess)
 
-let private startSapProcess config = 
+let private startSapProcess config notifyFinished = 
     let _, sapProcess = prepareSapProcess config
     sapProcess.EnableRaisingEvents <- true
-    sapProcess.Exited.Add handlePlayerProcessExited
+    sapProcess.Exited.Add(fun _ -> notifyFinished())
     sapProcess.Start() |> ignore
 
 let private runSapControlProcess config command = 
@@ -119,17 +118,17 @@ let private setPlayList drive playList =
     | NoDisk -> Loaded playList
     | _ -> drive
 
-let private play config schedule drive = 
+let private play config schedule notifyFinished drive = 
     match drive with
     | Loaded(playList) -> 
         writePlayListFile config playList
-        startSapProcess config
+        startSapProcess config notifyFinished
         Starting playList
     | Paused(playList, track) -> 
-        schedule(fun _ ->
-            startSapProcess config
+        schedule (fun _ -> 
+            startSapProcess config notifyFinished
             Playing(playList, track, TimeSpan.Zero))
-        Resuming (playList, track)
+        Resuming(playList, track)
     | _ -> drive
 
 let private stop config schedule drive = 
@@ -184,7 +183,7 @@ let private handlePlayListChanged config drive =
     | Failure(msg) -> Broken msg
     | Success(index) -> 
         match index with
-        | TrackIndex(_) -> 
+        | TrackIndex(i) -> 
             let reportPlaying pl = Playing(pl, index, (getElapsedTime config))
             match drive with
             | Starting(playList) -> reportPlaying playList
@@ -193,15 +192,26 @@ let private handlePlayListChanged config drive =
             | GoingToPrevious(playList, _) -> reportPlaying playList
             | _ -> drive
 
+let private handlePlayerPocessFinished config schedule drive = 
+    match drive with
+    | Playing(playList, _, _) -> 
+        schedule (fun d -> 
+            writePlayListFile config playList
+            d)
+        Loaded(playList)
+    | _ -> drive
+
 let private shouldTriggerUpdate lastDrive newDrive (lastUpdate : DateTime) (now : DateTime) = 
-    let supressIdentialUpdatesInterval = TimeSpan.FromMilliseconds(200.0)
-    if now.Subtract(lastUpdate) > supressIdentialUpdatesInterval then true
-    else 
-        match lastDrive, newDrive with
-        | Playing(_, _, elapsed1), Playing(pl2, t2, _) -> 
-            let toCompareTo = Playing(pl2, t2, elapsed1)
-            lastDrive <> toCompareTo
-        | d1, d2 -> d1 <> d2
+    match lastDrive, newDrive with
+    | Playing(_, t1, elapsed1), Playing(pl2, t2, elapsed2) -> 
+        match t1, t2 with
+        | TrackIndex(i1), TrackIndex(i2) when i2 < i1 || (i1 = i2 && elapsed2 < elapsed1) -> false
+        | _ -> 
+            if now.Subtract(lastUpdate) > TimeSpan.FromMilliseconds(200.0) then true
+            else 
+                let toCompareTo = Playing(pl2, t2, elapsed1)
+                lastDrive <> toCompareTo
+    | d1, d2 -> d1 <> d2
 
 let createApi (config : ConfigData) = 
     let directEvents = Event<Drive>()
@@ -209,6 +219,7 @@ let createApi (config : ConfigData) =
     let commandReceiver = 
         MailboxProcessor.Start(fun inbox -> 
             let schedule a = inbox.Post(NextAction a)
+            let notifyFinished() = inbox.Post PlayerProcessFinished
             
             let rec messageLoop drive lastLoopExecution = 
                 async { 
@@ -218,7 +229,7 @@ let createApi (config : ConfigData) =
                         | ExternalCommand cmd -> 
                             match cmd with
                             | SetPlayList(pl) -> setPlayList drive pl
-                            | Play -> play config schedule drive
+                            | Play -> play config schedule notifyFinished drive
                             | Stop -> stop config schedule drive
                             | Pause -> pause config schedule drive
                             | Next -> next config schedule drive
@@ -226,6 +237,7 @@ let createApi (config : ConfigData) =
                             | Query -> query config drive
                         | PlayListChange _ -> handlePlayListChanged config drive
                         | NextAction(a) -> a drive
+                        | PlayerProcessFinished -> handlePlayerPocessFinished config schedule drive
                     
                     let now = DateTime.Now
                     if shouldTriggerUpdate drive newDrive lastLoopExecution now then directEvents.Trigger newDrive
