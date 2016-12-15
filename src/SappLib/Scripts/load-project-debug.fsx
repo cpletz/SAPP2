@@ -2,4 +2,5 @@
 #I __SOURCE_DIRECTORY__
 #load "load-references-debug.fsx"
 #load "../Config.fs"
-      "../Player.fs"
+      "../DriveModel.fs"
+      "../DriveImpl.fs"

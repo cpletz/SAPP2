@@ -47,7 +47,8 @@
   <ItemGroup>
     <Content Include="App.config" />
     <Compile Include="Config.fs" />
-    <Compile Include="Player.fs" />
+    <Compile Include="DriveModel.fs" />
+    <Compile Include="DriveImpl.fs" />
     <None Include="Scripts\load-references-debug.fsx" />
     <None Include="Scripts\load-project-debug.fsx" />
     <None Include="Scripts\TryIt.fsx" />

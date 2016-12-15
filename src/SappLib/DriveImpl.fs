@@ -1,4 +1,4 @@
-﻿module Player
+﻿module DriveImpl
 
 open System
 open System.IO
@@ -6,50 +6,12 @@ open System.Text
 open System.Diagnostics
 open Config
 open System.Threading
-
-type Result<'a> = 
-    | Success of 'a
-    | Failure of string
-
-type MusicFile = 
-    | MusicFile of string
-
-type PlayList = 
-    | PlayList of MusicFile list
-
-type TrackIndex = 
-    | TrackIndex of int
-
-type Drive = 
-    | NoDisk
-    | Loaded of playList : PlayList
-    | Playing of playList : PlayList * track : TrackIndex * elapsed : TimeSpan
-    | Paused of playList : PlayList * track : TrackIndex
-    | Starting of playList : PlayList
-    | Stopping of playList : PlayList
-    | Pausing of playList : PlayList * track : TrackIndex
-    | Resuming of playList : PlayList * track : TrackIndex
-    | GoingToNext of playList : PlayList * track : TrackIndex
-    | GoingToPrevious of playList : PlayList * track : TrackIndex
-    | Broken of reason : string
-
-type Command = 
-    | SetPlayList of PlayList
-    | Play
-    | Stop
-    | Pause
-    | Next
-    | Previous
-    | Query
-
-type Api = 
-    { handle : Command -> unit
-      changes : IObservable<Drive> }
+open DriveModel
 
 type InternalCommand = 
     | ExternalCommand of Command
     | PlayListChange
-    | NextAction of (Drive -> Drive)
+    | NextAction of (DriveState -> DriveState)
     | PlayerProcessFinished
 
 let private encoding = Encoding.GetEncoding("ISO-8859-1")
@@ -96,7 +58,9 @@ let private prepareSapProcess config =
 let private startSapProcess config notifyFinished = 
     let _, sapProcess = prepareSapProcess config
     sapProcess.EnableRaisingEvents <- true
-    sapProcess.Exited.Add(fun _ -> notifyFinished())
+    sapProcess.Exited.Add(fun _ -> 
+        notifyFinished()
+        sapProcess.Dispose())
     sapProcess.Start() |> ignore
 
 let private runSapControlProcess config command = 
@@ -115,13 +79,13 @@ let private isFirstTrack (TrackIndex(index)) = index = 0
 
 let private setPlayList drive playList = 
     match drive with
-    | NoDisk -> Loaded playList
-    | Loaded (_) -> Loaded playList
+    | Empty -> Ready playList
+    | Ready(_) -> Ready playList
     | _ -> drive
 
 let private play config schedule notifyFinished drive = 
     match drive with
-    | Loaded(playList) -> 
+    | Ready(playList) -> 
         writePlayListFile config playList
         startSapProcess config notifyFinished
         Starting playList
@@ -137,11 +101,11 @@ let private stop config schedule drive =
     | Playing(playList, _, _) -> 
         schedule (fun _ -> 
             runSapControlProcess config "Stop"
-            Loaded playList)
+            Ready playList)
         Stopping playList
     | Paused(playList, _) -> 
         writePlayListFile config playList
-        Loaded playList
+        Ready playList
     | _ -> drive
 
 let private pause config schedule drive = 
@@ -199,23 +163,24 @@ let private handlePlayerPocessFinished config schedule drive =
         schedule (fun d -> 
             writePlayListFile config playList
             d)
-        Loaded(playList)
+        Ready(playList)
     | _ -> drive
 
 let private shouldTriggerUpdate lastDrive newDrive (lastUpdate : DateTime) (now : DateTime) = 
+    let updatesNotVeryClose = now.Subtract(lastUpdate) > TimeSpan.FromMilliseconds(200.0)
     match lastDrive, newDrive with
     | Playing(_, t1, elapsed1), Playing(pl2, t2, elapsed2) -> 
         match t1, t2 with
         | TrackIndex(i1), TrackIndex(i2) when i2 < i1 || (i1 = i2 && elapsed2 < elapsed1) -> false
         | _ -> 
-            if now.Subtract(lastUpdate) > TimeSpan.FromMilliseconds(200.0) then true
+            if updatesNotVeryClose then true
             else 
                 let toCompareTo = Playing(pl2, t2, elapsed1)
                 lastDrive <> toCompareTo
-    | d1, d2 -> d1 <> d2
+    | d1, d2 -> updatesNotVeryClose || d1 <> d2
 
 let createApi (config : ConfigData) = 
-    let directEvents = Event<Drive>()
+    let directEvents = Event<DriveState>()
     
     let commandReceiver = 
         MailboxProcessor.Start(fun inbox -> 
@@ -244,7 +209,7 @@ let createApi (config : ConfigData) =
                     if shouldTriggerUpdate drive newDrive lastLoopExecution now then directEvents.Trigger newDrive
                     return! messageLoop newDrive now
                 }
-            messageLoop NoDisk DateTime.Now)
+            messageLoop Empty DateTime.Now)
     
     let playListWatcher = new FileSystemWatcher(config.SAPDirectory, Path.GetFileName config.SAPPlaylistPath)
     playListWatcher.EnableRaisingEvents <- true
@@ -254,3 +219,19 @@ let createApi (config : ConfigData) =
     let impl cmd = commandReceiver.Post(ExternalCommand cmd)
     { handle = impl
       changes = directEvents.Publish }
+
+let availableCommands drive = 
+    let setPlayList = SetPlayList(PlayList [])
+    match drive with
+    | Empty -> [ setPlayList ]
+    | Ready(_) -> [ setPlayList; Play ]
+    | Playing(playList, track, _) -> 
+        seq { 
+            yield Stop
+            yield Pause
+            if not (isLastTrack playList track) then yield Next
+            if not (isFirstTrack track) then yield Previous
+        }
+        |> Seq.toList
+    | Paused(_) -> [ Play; Stop ]
+    | _ -> []
