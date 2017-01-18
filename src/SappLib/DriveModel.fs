@@ -2,10 +2,6 @@
 
 open System
 
-type Result<'a> = 
-    | Success of 'a
-    | Failure of string
-
 type MusicFile = 
     | MusicFile of string
 
@@ -38,5 +34,5 @@ type Command =
     | Query
 
 type Api = 
-    { handle : Command -> unit
+    { execute : Command -> unit
       changes : IObservable<DriveState> }

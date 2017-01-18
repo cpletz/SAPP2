@@ -46,12 +46,15 @@
   <Import Project="$(FSharpTargetsPath)" Condition="Exists('$(FSharpTargetsPath)')" />
   <ItemGroup>
     <Content Include="App.config" />
+    <Compile Include="Utils.fs" />
     <Compile Include="Config.fs" />
     <Compile Include="DriveModel.fs" />
-    <Compile Include="DriveImpl.fs" />
+    <Compile Include="Drive.fs" />
+    <Compile Include="Converter.fs" />
     <None Include="Scripts\load-references-debug.fsx" />
     <None Include="Scripts\load-project-debug.fsx" />
-    <None Include="Scripts\TryIt.fsx" />
+    <None Include="Scripts\TryTheDrive.fsx" />
+    <None Include="Scripts\TryTheConverter.fsx" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="mscorlib" />

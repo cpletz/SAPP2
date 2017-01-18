@@ -1,7 +1,7 @@
 ﻿#I @"C:\Users\chris\Source\Repos\SAPP2\src\SappLib\Scripts"
 #load "load-project-debug.fsx"
 
-open DriveImpl
+open Drive
 open DriveModel
 open Config
 open Microsoft.FSharp.Reflection
@@ -25,18 +25,18 @@ let callback d =
     match d with
     | Playing(_, TrackIndex t, elapsed) -> printf "Playing index %i elapsed %O" t elapsed
     | _ -> printf "%s ..." (getUnionCaseName d)
-    d |> DriveImpl.availableCommands |> printCommands |> printf "\nAvailable commands: %s\n"
+    d |> Drive.availableCommands |> printCommands |> printf "\nAvailable commands: %s\n"
 
-let api = DriveImpl.createApi config
+let api = Drive.createApi config
 api.changes |> Observable.subscribe callback
 
-api.handle (SetPlayList playList2)
-api.handle Play
-api.handle Next
-api.handle Previous
-api.handle Stop
-api.handle Pause
-api.handle Query
+api.execute (SetPlayList playList)
+api.execute Play
+api.execute Next
+api.execute Previous
+api.execute Stop
+api.execute Pause
+api.execute Query
 
 
 

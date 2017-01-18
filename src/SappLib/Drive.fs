@@ -1,4 +1,4 @@
-﻿module DriveImpl
+﻿module Drive
 
 open System
 open System.IO
@@ -7,12 +7,6 @@ open System.Diagnostics
 open Config
 open System.Threading
 open DriveModel
-
-type InternalCommand = 
-    | ExternalCommand of Command
-    | PlayListChange
-    | NextAction of (DriveState -> DriveState)
-    | PlayerProcessFinished
 
 let private encoding = Encoding.GetEncoding("ISO-8859-1")
 
@@ -28,20 +22,18 @@ let rec openPlayListFile (config : ConfigData) retryCnt =
                 Some(File.ReadAllLines(config.SAPPlaylistPath, encoding))
             with _ -> None
         match lines with
-        | Some(content) -> Success content
+        | Some(content) -> content
         | None -> 
             Thread.Sleep 100
             openPlayListFile config (retryCnt - 1)
-    else Failure "Cannot open play-list file."
+    else failwith "Cannot open play-list file."
 
 let private findCurrentIndex config = 
-    match (openPlayListFile config 10) with
-    | Success(playListContent) -> 
-        let index = playListContent |> Array.tryFindIndex (fun l -> l.StartsWith "#")
-        match index with
-        | Some(i) -> Success(TrackIndex i)
-        | None -> Success(TrackIndex 0)
-    | Failure(msg) -> Failure(sprintf "Could nor retrieve current track (Reason: %s)" msg)
+    let playListContent = openPlayListFile config 10
+    let indexOpt = playListContent |> Array.tryFindIndex (fun l -> l.StartsWith "#")
+    match indexOpt with
+    | Some(i) -> TrackIndex(i)
+    | None -> TrackIndex(0)
 
 let private getElapsedTime (config : ConfigData) = 
     let playListFileInfo = FileInfo config.SAPPlaylistPath
@@ -138,24 +130,20 @@ let private previous config schedule drive =
 let private query config drive = 
     match drive with
     | Playing(playList, _, _) -> 
-        match (findCurrentIndex config) with
-        | Success(index) -> Playing(playList, index, (getElapsedTime config))
-        | Failure(msg) -> Broken msg
+        Playing(playList, (findCurrentIndex config), (getElapsedTime config))
     | _ -> drive
 
 let private handlePlayListChanged config drive = 
-    match (findCurrentIndex config) with
-    | Failure(msg) -> Broken msg
-    | Success(index) -> 
-        match index with
-        | TrackIndex(i) -> 
-            let reportPlaying pl = Playing(pl, index, (getElapsedTime config))
-            match drive with
-            | Starting(playList) -> reportPlaying playList
-            | Playing(playList, _, _) -> reportPlaying playList
-            | GoingToNext(playList, _) -> reportPlaying playList
-            | GoingToPrevious(playList, _) -> reportPlaying playList
-            | _ -> drive
+    let index = findCurrentIndex config
+    match index with
+    | TrackIndex(i) -> 
+        let reportPlaying pl = Playing(pl, index, (getElapsedTime config))
+        match drive with
+        | Starting(playList) -> reportPlaying playList
+        | Playing(playList, _, _) -> reportPlaying playList
+        | GoingToNext(playList, _) -> reportPlaying playList
+        | GoingToPrevious(playList, _) -> reportPlaying playList
+        | _ -> drive
 
 let private handlePlayerPocessFinished config schedule drive = 
     match drive with
@@ -179,46 +167,63 @@ let private shouldTriggerUpdate lastDrive newDrive (lastUpdate : DateTime) (now 
                 lastDrive <> toCompareTo
     | d1, d2 -> updatesNotVeryClose || d1 <> d2
 
+type private DriveActorCommand = 
+    | DriveCommand of Command
+    | PlayListChange
+    | NextAction of (DriveState -> DriveState)
+    | PlayerProcessFinished
+
+type private DriveActorState = 
+    { driveState : DriveState
+      lastExecution : DateTime }
+
+let private driveStateChangedEvents = Event<DriveState>()
+
 let createApi (config : ConfigData) = 
-    let directEvents = Event<DriveState>()
-    
-    let commandReceiver = 
+    let driveActor = 
         MailboxProcessor.Start(fun inbox -> 
             let schedule a = inbox.Post(NextAction a)
             let notifyFinished() = inbox.Post PlayerProcessFinished
             
-            let rec messageLoop drive lastLoopExecution = 
+            let rec messageLoop state = 
                 async { 
-                    let! internalCmd = inbox.Receive()
+                    let! actorCmd = inbox.Receive()
+                    let driveState = state.driveState
+                    
                     let newDrive = 
-                        match internalCmd with
-                        | ExternalCommand cmd -> 
-                            match cmd with
-                            | SetPlayList(pl) -> setPlayList drive pl
-                            | Play -> play config schedule notifyFinished drive
-                            | Stop -> stop config schedule drive
-                            | Pause -> pause config schedule drive
-                            | Next -> next config schedule drive
-                            | Previous -> previous config schedule drive
-                            | Query -> query config drive
-                        | PlayListChange _ -> handlePlayListChanged config drive
-                        | NextAction(a) -> a drive
-                        | PlayerProcessFinished -> handlePlayerPocessFinished config schedule drive
+                        try
+                            match actorCmd with
+                            | DriveCommand cmd -> 
+                                match cmd with
+                                | SetPlayList(pl) -> setPlayList driveState pl
+                                | Play -> play config schedule notifyFinished driveState
+                                | Stop -> stop config schedule driveState
+                                | Pause -> pause config schedule driveState
+                                | Next -> next config schedule driveState
+                                | Previous -> previous config schedule driveState
+                                | Query -> query config driveState
+                            | PlayListChange _ -> handlePlayListChanged config driveState
+                            | NextAction(a) -> a driveState
+                            | PlayerProcessFinished -> handlePlayerPocessFinished config schedule driveState
+                        with e -> (Broken e.Message)
                     
                     let now = DateTime.Now
-                    if shouldTriggerUpdate drive newDrive lastLoopExecution now then directEvents.Trigger newDrive
-                    return! messageLoop newDrive now
+                    if shouldTriggerUpdate driveState newDrive state.lastExecution now then 
+                        driveStateChangedEvents.Trigger newDrive
+                    return! messageLoop { driveState = newDrive
+                                          lastExecution = now }
                 }
-            messageLoop Empty DateTime.Now)
+            messageLoop { driveState = Empty
+                          lastExecution = DateTime.Now })
     
     let playListWatcher = new FileSystemWatcher(config.SAPDirectory, Path.GetFileName config.SAPPlaylistPath)
     playListWatcher.EnableRaisingEvents <- true
     playListWatcher.Changed
-    |> Observable.subscribe (fun _ -> commandReceiver.Post PlayListChange)
+    |> Observable.subscribe (fun _ -> driveActor.Post PlayListChange)
     |> ignore
-    let impl cmd = commandReceiver.Post(ExternalCommand cmd)
-    { handle = impl
-      changes = directEvents.Publish }
+    let impl cmd = driveActor.Post(DriveCommand cmd)
+    { execute = impl
+      changes = driveStateChangedEvents.Publish }
 
 let availableCommands drive = 
     let setPlayList = SetPlayList(PlayList [])
