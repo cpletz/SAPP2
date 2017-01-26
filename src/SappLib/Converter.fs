@@ -21,7 +21,7 @@ type FileToConvert =
     { Id : MusicFileId
       FlacFile : FlacPath
       WavFile : WavPath
-      SamplingRate: int }
+      SamplingRate : int }
 
 type FilesToConvert = 
     | FilesToConvert of FileToConvert list
@@ -41,23 +41,20 @@ type ConverterApi =
     { execute : ConverterCommand -> unit
       progress : IObservable<ConverterState> }
 
-let rec private lowerSamplingRate current target =
+let rec private lowerSamplingRate current target = 
     if current <= target then current
-    else lowerSamplingRate (current/2) target
+    else lowerSamplingRate (current / 2) target
 
-let rec private hightenSamplingRate current target =
+let rec private hightenSamplingRate current target = 
     if (current * 2) > target then current
     else hightenSamplingRate (current * 2) target
 
 let private getConversionArgs config file = 
-    let targetSamplingRate =
-        if file.SamplingRate >= config.TargetSamplingRate then
-            lowerSamplingRate file.SamplingRate config.TargetSamplingRate
-        else 
-            hightenSamplingRate file.SamplingRate config.TargetSamplingRate
-
-    let {WavFile = WavPath(wavFile); FlacFile = FlacPath(flacFile)} = file
-            
+    let targetSamplingRate = 
+        if file.SamplingRate >= config.TargetSamplingRate then lowerSamplingRate file.SamplingRate config.TargetSamplingRate
+        else hightenSamplingRate file.SamplingRate config.TargetSamplingRate
+    
+    let { WavFile = WavPath(wavFile); FlacFile = FlacPath(flacFile) } = file
     sprintf "\"%s\" −b %i \"%s\" rate %i" flacFile config.TargetBitRate wavFile targetSamplingRate
 
 let private deleteWavFile (WavPath file) = File.Delete file
@@ -96,11 +93,11 @@ let private startFileConversion config file (cancellationToken : CancellationTok
 let private convertFiles config (FilesToConvert(files)) (cancellationToken : CancellationToken) success error = 
     let noOfParallelConversions = 4
     
-    let convertNow, convertLater = 
+    let convertNow, _ = 
         if files.Length > noOfParallelConversions then files |> List.splitAt noOfParallelConversions
         else files, []
     convertNow |> List.iter (fun f -> startFileConversion config f cancellationToken success error)
-    convertNow, convertLater
+    convertNow
 
 type private ConversionActorCommand = 
     | ExternalCommand of ConverterCommand
@@ -132,83 +129,87 @@ let createApi (config : ConfigData) =
                     let! conversionCmd = inbox.Receive()
                     let newState = 
                         match conversionCmd, loopState with
-                        // New conversion request ...
-                        // ...the converter is idle
+                        // New conversion request...the converter is idle
                         | ExternalCommand(ConvertFiles(files)), { State = Idle } -> 
+                            let fileList = 
+                                match files with
+                                | FilesToConvert(fl) -> fl
+                            let newConverterState = Converting(files, fileList)
+                            progressEvents.Trigger newConverterState
                             let cts = new CancellationTokenSource()
-                            let inPogress, stillToDo = convertFiles config files cts.Token onConversionSucceeded onConversionFailed
-                            { State = Converting(files, stillToDo)
+                            let inPogress = convertFiles config files cts.Token onConversionSucceeded onConversionFailed
+                            { State = newConverterState
                               InProgress = inPogress
                               NextConversion = None
                               CTS = Some(cts) }
-                        // New conversion request ...
-                        // ...the converter is converting
+                        // New conversion request...the converter is converting
                         | ExternalCommand(ConvertFiles(files)), { State = Converting(_); InProgress = inProgress; CTS = Some(cts) } -> 
                             cts.Cancel()
                             { State = Cancelling
                               InProgress = inProgress
                               NextConversion = Some(files)
                               CTS = Some(cts) }
-                        // New conversion request ...
-                        // ...the converter is cancelling
+                        // New conversion request...the converter is cancelling
                         | ExternalCommand(ConvertFiles(files)), { State = Cancelling; InProgress = inProgress; CTS = Some(cts) } -> 
                             { State = Cancelling
                               InProgress = inProgress
                               NextConversion = Some(files)
                               CTS = Some(cts) }
-                        // New cancellation request ...
-                        // ...the converter is converting
-                        | ExternalCommand(Cancel(_)), { State = Converting(_); InProgress = inProgress; CTS = Some(cts) } -> 
+                        // New cancellation request...the converter is converting
+                        | ExternalCommand(Cancel(_)), { State = Converting(_); CTS = Some(cts) } -> 
                             cts.Cancel()
-                            { State = Cancelling
-                              InProgress = inProgress
-                              NextConversion = loopState.NextConversion
-                              CTS = Some(cts) }
-                        // The conversion of a file has finished ...
-                        // ...the converter is converting
+                            { loopState with State = Cancelling }
+                        // The conversion of a file has finished ... the converter is converting
                         | FileConverted(file), { State = Converting(files, todo); InProgress = inProgress; CTS = Some(cts) } -> 
-                            match todo with
+                            let filesToBeScheduled = todo |> List.except inProgress
+                            let newTodo = todo |> List.except [ file ]
+                            
+                            let nowScheduled = 
+                                match filesToBeScheduled with
+                                | [] -> None
+                                | next :: _ -> 
+                                    startFileConversion config next cts.Token onConversionSucceeded onConversionFailed
+                                    Some(next)
+                            
+                            let newInProgress = 
+                                inProgress
+                                |> List.except [ file ]
+                                |> List.append (match nowScheduled with
+                                                | Some(f) -> [ f ]
+                                                | None -> [])
+                            
+                            match newInProgress with
                             | [] -> 
                                 cts.Dispose()
                                 progressEvents.Trigger(Converting(files, []))
                                 idleState
-                            | next :: rest -> 
-                                startFileConversion config next cts.Token onConversionSucceeded onConversionFailed
-                                { State = Converting(files, rest)
-                                  InProgress = inProgress |> Utils.removeFromList file
-                                  NextConversion = None
-                                  CTS = Some(cts) }
-                        // The conversion of a file has finished ...
-                        // ...the converter is cancelling
+                            | _ -> 
+                                { loopState with State = Converting(files, newTodo)
+                                                 InProgress = newInProgress }
+                        // The conversion of a file has finished ...the converter is cancelling
                         | FileConverted(file), { State = Cancelling(_); InProgress = inProgress; CTS = Some(cts) } -> 
-                            let newInProgress = inProgress |> Utils.removeFromList file
+                            let newInProgress = inProgress |> List.except [file]
                             match newInProgress with
                             | [] -> 
                                 cts.Dispose()
-                                if loopState.NextConversion.IsSome then 
-                                    inbox.Post (ExternalCommand(ConvertFiles(loopState.NextConversion.Value)))
+                                if loopState.NextConversion.IsSome then inbox.Post(ExternalCommand(ConvertFiles(loopState.NextConversion.Value)))
                                 idleState
-                            | _ -> { loopState with InProgress = newInProgress}
-                        // The conversion of a file has failed ...
-                        // ...the converter is converting
+                            | _ -> { loopState with InProgress = newInProgress }
+                        // The conversion of a file has failed...the converter is converting
                         | ConversionFailed(file, reason), { State = Converting(_); InProgress = inProgress; CTS = Some(cts) } -> 
                             cts.Cancel()
                             progressEvents.Trigger(Failed(file, reason))
                             { State = Cancelling
-                              InProgress = inProgress |> Utils.removeFromList file
+                              InProgress = inProgress |> List.except [file]
                               NextConversion = None
-                              CTS = Some(cts) }                        
-                        // The cancellation of a conversion has failed ...
-                        // ...the converter is cancelling
-                        | ConversionFailed(file, _), { State = Cancelling; InProgress = inProgress; CTS = Some(cts) }  -> 
+                              CTS = Some(cts) }
+                        // The cancellation of a conversion has failed ...the converter is cancelling
+                        | ConversionFailed(file, _), { State = Cancelling; InProgress = inProgress; CTS = Some(cts) } -> 
                             match inProgress with
                             | [] -> 
-                                if loopState.NextConversion.IsSome then 
-                                    inbox.Post (ExternalCommand(ConvertFiles(loopState.NextConversion.Value)))
+                                if loopState.NextConversion.IsSome then inbox.Post(ExternalCommand(ConvertFiles(loopState.NextConversion.Value)))
                                 idleState
-                            | _ -> { loopState with InProgress = inProgress |> Utils.removeFromList file}
-
-
+                            | _ -> { loopState with InProgress = inProgress |> Utils.removeFromList file }
                         | _ -> loopState
                     progressEvents.Trigger newState.State
                     return! messageLoop newState
@@ -218,3 +219,4 @@ let createApi (config : ConfigData) =
     let exec conversionCmd = conversionActor.Post(ExternalCommand conversionCmd)
     { execute = exec
       progress = progressEvents.Publish }
+
