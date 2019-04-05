@@ -1,11 +1,11 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio 14
-VisualStudioVersion = 14.0.25420.1
+# Visual Studio 15
+VisualStudioVersion = 15.0.28307.539
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "SappLib", "SappLib\SappLib.fsproj", "{0E58BE4B-EFEA-40AE-9568-979AD9F904A9}"
 EndProject
-Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "SappServer", "SappServer\SappServer.fsproj", "{E9B29561-7B8A-4B59-B67E-01A781126D33}"
+Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "SappCli", "SappCli\SappCli.fsproj", "{973D5C24-DC75-46FC-800A-8E844E0C847E}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -17,12 +17,15 @@ Global
 		{0E58BE4B-EFEA-40AE-9568-979AD9F904A9}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{0E58BE4B-EFEA-40AE-9568-979AD9F904A9}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{0E58BE4B-EFEA-40AE-9568-979AD9F904A9}.Release|Any CPU.Build.0 = Release|Any CPU
-		{E9B29561-7B8A-4B59-B67E-01A781126D33}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{E9B29561-7B8A-4B59-B67E-01A781126D33}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{E9B29561-7B8A-4B59-B67E-01A781126D33}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{E9B29561-7B8A-4B59-B67E-01A781126D33}.Release|Any CPU.Build.0 = Release|Any CPU
+		{973D5C24-DC75-46FC-800A-8E844E0C847E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{973D5C24-DC75-46FC-800A-8E844E0C847E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{973D5C24-DC75-46FC-800A-8E844E0C847E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{973D5C24-DC75-46FC-800A-8E844E0C847E}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {30E72E78-E8D9-47A3-8969-A8E710DA9707}
 	EndGlobalSection
 EndGlobal
