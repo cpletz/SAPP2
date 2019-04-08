@@ -45,10 +45,11 @@
   </PropertyGroup>
   <Import Project="$(FSharpTargetsPath)" />
   <ItemGroup>
-    <Compile Include="AssemblyInfo.fs" />
-    <Compile Include="Program.fs" />
-    <None Include="App.config" />
     <Content Include="packages.config" />
+    <None Include="App.config" />
+    <Compile Include="AssemblyInfo.fs" />
+    <Compile Include="SelectFlacFiles.fs" />
+    <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="FSharp.Core">
@@ -97,5 +98,12 @@
       <Private>True</Private>
       <Paket>True</Paket>
     </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SappLib\SappLib.fsproj">
+      <Name>SappLib</Name>
+      <Project>{0e58be4b-efea-40ae-9568-979ad9f904a9}</Project>
+      <Private>True</Private>
+    </ProjectReference>
   </ItemGroup>
 </Project>
